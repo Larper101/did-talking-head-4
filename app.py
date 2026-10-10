@@ -108,7 +108,6 @@ st.markdown("""
 # ---------------------------------------------------------
 # CONSTANTS & DEFAULT AVATAR
 # ---------------------------------------------------------
-DEFAULT_AVATAR_URL = "https://images.unsplash.com/photo-1494790108377-be9c29b29330"
 
 VOICE_OPTIONS = {
     "en-US-JennyNeural": "🇺🇸 Jenny - Natural American Female",
@@ -176,6 +175,25 @@ def get_auth_header(api_key: str) -> dict:
         "Content-Type": "application/json"
     }
 
+def upload_image_to_did(api_key: str, image_bytes: bytes, mime_type: str) -> str:
+    """Uploads a local image to D-ID and returns the temporary URL."""
+    url = "https://api.d-id.com/images"
+    headers = {
+        "Authorization": f"Basic {base64.b64encode(api_key.encode('utf-8')).decode('utf-8')}"
+    }
+    
+    ext = ".png" if "png" in mime_type.lower() else ".jpg"
+    files = {"image": (f"avatar{ext}", image_bytes, mime_type)}
+    
+    response = requests.post(url, headers=headers, files=files, timeout=30)
+    data = response.json()
+    
+    if not response.ok:
+        err_msg = data.get("description") or data.get("message") or f"HTTP {response.status_code}: {response.reason}"
+        raise Exception(f"D-ID Image Upload Error: {err_msg}")
+        
+    return data.get("url")
+
 def create_talk(api_key: str, source_url: str, text: str, voice_id: str) -> str:
     """Initiate a talk generation request on D-ID production servers."""
     url = "https://api.d-id.com/talks"
@@ -222,9 +240,6 @@ if "current_video" not in st.session_state:
 
 if "script_input" not in st.session_state:
     st.session_state.script_input = SAMPLE_SCRIPTS["Product Launch"]
-
-if "selected_avatar_url" not in st.session_state:
-    st.session_state.selected_avatar_url = DEFAULT_AVATAR_URL
 
 # ---------------------------------------------------------
 # SIDEBAR & SETTINGS
@@ -287,22 +302,18 @@ left_col, right_col = st.columns([5, 6], gap="large")
 with left_col:
     st.markdown("### 1. Select Presenter Avatar")
     
-    # Custom Avatar URL Input
-    custom_url = st.text_input(
-        "Custom Frontal Face Image URL",
-        value=st.session_state.selected_avatar_url,
-        help="Direct HTTPS link to a clean frontal face image (JPEG or PNG)."
+    # Custom Avatar Image Upload
+    uploaded_file = st.file_uploader(
+        "Upload Custom Frontal Face Image",
+        type=["jpg", "jpeg", "png"],
+        help="Upload a clean frontal face image (JPEG or PNG)."
     )
-    st.session_state.selected_avatar_url = custom_url
 
     # Dynamic Image Preview
-    if custom_url.strip():
-        try:
-            st.image(custom_url.strip(), caption="Presenter Avatar Preview", width=250)
-        except Exception:
-            st.warning("⚠️ Could not load image preview. Please ensure the URL is a valid direct image link.")
+    if uploaded_file is not None:
+        st.image(uploaded_file, caption="Presenter Avatar Preview", width=250)
     else:
-        st.warning("⚠️ Image URL field is blank. Please enter a valid Frontal Face Image URL.")
+        st.info("⚠️ Please upload a Frontal Face Image.")
 
     st.markdown("### 2. Voice & Script Settings")
     
@@ -343,14 +354,18 @@ with right_col:
     if generate_clicked:
         if not api_key:
             st.error("Please provide your `D_ID_API_KEY` in the sidebar or `.env` file.")
-        elif not custom_url.strip():
-            st.warning("⚠️ Please provide a Custom Frontal Face Image URL before generating the video.")
+        elif not uploaded_file:
+            st.warning("⚠️ Please upload a Custom Frontal Face Image before generating the video.")
         elif not script_text.strip():
             st.error("Please enter a speech script.")
         else:
-            with st.spinner("Dispatching talk request to D-ID production servers..."):
+            with st.spinner("Uploading image and dispatching talk request to D-ID..."):
                 try:
-                    talk_id = create_talk(api_key, custom_url.strip(), script_text, selected_voice_key)
+                    # Upload image to D-ID
+                    image_url = upload_image_to_did(api_key, uploaded_file.getvalue(), uploaded_file.type)
+                    
+                    # Create talk request
+                    talk_id = create_talk(api_key, image_url, script_text, selected_voice_key)
                     st.info(f"Talk request created! Talk ID: `{talk_id}`")
                     
                     # Polling loop
@@ -383,12 +398,16 @@ with right_col:
 
                     if video_result_url:
                         st.session_state.current_video = video_result_url
+                        # Convert uploaded image to base64 for history display
+                        base64_avatar = base64.b64encode(uploaded_file.getvalue()).decode("utf-8")
+                        avatar_data_url = f"data:{uploaded_file.type};base64,{base64_avatar}"
+                        
                         # Record history item
                         new_record = {
                             "id": f"rec_{int(time.time())}",
                             "talkId": talk_id,
                             "videoUrl": video_result_url,
-                            "avatarUrl": custom_url.strip(),
+                            "avatarUrl": avatar_data_url,
                             "scriptText": script_text,
                             "voiceName": VOICE_OPTIONS[selected_voice_key].split(" ")[1],
                             "createdAt": datetime.now().strftime("%b %d, %H:%M"),
